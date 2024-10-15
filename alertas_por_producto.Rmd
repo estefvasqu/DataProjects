@@ -1,0 +1,328 @@
+---
+title: "Alertas por producto"
+author: "Bolsa de Cereales"
+date: '`r paste(format(Sys.Date(), "%d-%m-%Y"))`'
+output:
+  html_document: default
+  pdf_document: defaultW
+  word_document: default
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+# if (file.exists("~/Documents/")) { #En bunker
+#   setwd("~/Documents")
+# } else { #En la BdCÿ
+#   setwd("U:/Precios FOB")
+# }
+
+library(xtable)
+library(tidyverse)
+library(chron)
+```
+
+### Resumen
+
+<p style="color:#08519c">*A continuación se detallan las alertas para cada posición, punta (compradora y vendedora) y producto. La alerta se emite cuando se detecta que el rango de variación es mayor a un porcentaje del precio medio de ese día. El rango de variación se determina como la diferencia entre el precio máximo y mínimo informados para esa posición, punta y producto en cada día. *</p>
+<p style="color:#08519c">*Los rangos de variación con que se disparan las alertas son:*</p>
+<p style="color:#08519c">*Soja(c/bu)  4.5%*</p>
+<p style="color:#08519c">*Aceite de Soja(c/lib) 4%*</p>
+<p style="color:#08519c">*Harina de Soja(usd/ton) 3.5%*</p>
+<p style="color:#08519c">*Maíz(c/bu) 9%*</p>
+<p style="color:#08519c">*Trigo(Flat) 14%*</p>
+<p style="color:#08519c">*Aceite de Girasol(Flat) 10%*</p>
+
+
+
+```{r echo=FALSE, warning = FALSE}
+#Cargamos los precios de Chicago y las primas reportadas
+#cbot = read.csv("cbot.csv", colClasses=c("character", "character", "character", 
+#                                                        "numeric", "numeric", "numeric"), 
+#                sep = ";", na.strings=c(""," ","NA"), header = FALSE)
+
+###############################################################################
+#########   Pasos a seguir para obtener el archivo a utilizar  ################
+###############################################################################
+
+#Para obtener el archivo se debe ir a https://www.bolsadecereales.com/admin
+#Loggearse con el usuario de agustint
+#Ir a Configuración - Pos - Descarga de datos
+#Elegir la fecha correspondiente al índice
+#Descargar la opción "Descarga de Precios de Chicago"
+#Mover el archivo a la unidad U:/Precios FOB (en caso de no tenerla crearla)
+cbot = readxl::read_excel("C:/Users/estef/Downloads/serie_precios_chicago.xlsx")
+
+colnames(cbot) = c("fecha", "producto", "referencia", "cbot", "cbot_min", "cbot_max" )
+cbot$fecha = as.Date(cbot$fecha, "%d/%m/%Y")
+
+#Para este análisis no nos interesa el máximo y mínimo
+cbot = cbot %>%
+  select(fecha:cbot)
+
+#Cargamos las primas del día
+#primas = read.csv("primas_alerta.csv", colClasses=c("character", "character", "character", "character", 
+#                                                                 "character", "character", "numeric", "numeric"), 
+#                        sep = ",", na.strings=c(""," ","NA"), header = TRUE)
+
+
+###############################################################################
+#########   Pasos a seguir para obtener el archivo a utilizar  ################
+###############################################################################
+
+#Para obtener el archivo se debe ir a https://www.bolsadecereales.com/admin
+#Loggearse con el usuario de agustint
+#Ir a Configuración - Pos - Descarga de datos
+#Elegir la fecha correspondiente al índice
+#Descargar la opción "Descargar de Datos Ingresados por Empresa/Broker"
+#Mover el archivo a la unidad U:/Precios FOB (en caso de no tenerla crearla)
+
+#paquete::funcion
+primas = readxl::read_excel("C:/Users/estef/Downloads/datos_pos.xlsx")
+
+
+colnames(primas) <- c("fecha", "empresa", "producto", "referencia", "posicion_mes", 
+                            "posicion_ano", "prima_compradora", "prima_vendedora")
+
+#extraemos la columna fecha del DFrame primas y la convertimos en tipos de fechas 
+primas$fecha = as.Date(primas$fecha, "%d/%m/%Y")
+
+
+#Eliminamos a Girasol del listado de las primas
+primas=primas[primas$producto != c("Girasol"),]
+
+#---------------------------------------------------
+#Filtro de casos especiales
+#primas=primas %>% filter(producto != "Aceite de Soja"| empresa != "Molinos Agro")
+#primas=primas %>% filter(producto != "Maiz"| empresa != "Cargill")
+#primas=primas %>% filter(producto != "Maiz"| empresa != "Gear")
+#---------------------------------------------------
+
+
+#Para poder derterminar un criterio trabajamos sobre los precios para 
+#considerar también los casos en que las posiciones de referencia difieren
+
+#Creamos una tabla de coeficientes y luego la unimos con la de primas
+producto<-c("Soja", "Maiz", "Harina de Soja", "Aceite de Soja", "Aceite de Girasol", "Trigo 11.5%")
+coeficiente<-c(0.367454, 0.39368, 1.1023, 0.22046, 1, 1 )
+coeficientes<-data.frame(producto, coeficiente, stringsAsFactors=FALSE)
+primas_ajustadas = merge(primas, coeficientes, by = c("producto"), all = TRUE)
+
+#Aquí convertimos las primas a USD/t
+primas_ajustadas = primas_ajustadas %>%
+  mutate(prima_compradora = prima_compradora * coeficiente,
+         prima_vendedora = prima_vendedora * coeficiente)
+
+primas_ajustadas = primas_ajustadas[,c("fecha", "empresa", "producto", "referencia", "posicion_mes", "posicion_ano", 
+                               "prima_compradora", "prima_vendedora")]
+
+
+#Separamos una base para los productos sin referencia CBOT y creamos la columna cbot
+precios_no_cbot = subset(primas_ajustadas, producto %in% c("Trigo 11.5%", "Aceite de Girasol"))
+precios_no_cbot$cbot <- 0
+
+#Ahora juntamos la tabla primas con cbot
+base = merge(primas_ajustadas, cbot, by=c("fecha", "producto", "referencia"))
+
+
+#Y ahora juntamos las dos tablas fob
+base_final = rbind(base, precios_no_cbot)
+base_final = base_final[order(base_final$producto, base_final$posicion_mes),]
+
+#Calculamos el precio 
+base_final$p_comprador = base_final$cbot + base_final$prima_compradora
+base_final$p_vendedor = base_final$cbot + base_final$prima_vendedora
+
+#Para filtrar por producto]
+#productos = c("Harina de Soja", "Soja", "Aceite de Soja", "Maiz", "Aceite de Girasol", "Trigo 11.5%")
+#color_producto = c("#4DAF4A", "#984EA3", "#FF7F00","#377EB8", "#dd1c77")
+#indice_producto = 2
+
+
+#Calculamos el filtro
+stats_precios = base_final %>%
+  group_by(fecha, producto, posicion_mes, posicion_ano) %>%
+  summarise(coef_var_comprador = (max(p_comprador, na.rm=TRUE)-min(p_comprador, na.rm=TRUE))/
+              abs(mean(p_comprador, na.rm=TRUE)),
+            coef_var_vendedor = (max(p_vendedor, na.rm=TRUE)-min(p_vendedor, na.rm=TRUE))/
+              abs(mean(p_vendedor, na.rm = TRUE)),
+            can_comprador = sum(!is.na(p_comprador)), can_vendedor = sum(!is.na(p_vendedor)),
+            .groups = 'drop') %>%
+  mutate(coef_var_comprador = case_when(can_comprador <= 2 ~ NA_real_, #para que solo nos de problemas
+                                        TRUE ~ coef_var_comprador)) %>% #cuando haya más de dos reportes
+  mutate(coef_var_vendedor = case_when(can_vendedor <= 2 ~ NA_real_,
+                                       TRUE ~ coef_var_vendedor))
+
+
+#stats_precios_producto =  stats_precios[stats_precios$producto == productos[indice_producto] , ]
+#comprador = stats_precios_producto %>% filter(coef_var_comprador>=0.045)
+#comprador
+#vendedor = stats_precios_producto %>% filter(coef_var_vendedor>=0.045)
+#vendedor
+
+#Función para cambiar los nombres de las empresas y brokers
+NombreEmpresa <- function(empresa){
+  if(empresa=="Gear")
+    return("Empresa 1")
+  if(empresa=="Bunge")
+    return("Empresa 2")
+  if(empresa=="Curcija S.A.")
+    return("Empresa 3")
+  if(empresa=="AGD")
+    return("Empresa 4")
+  if(empresa=="CHS")
+    return("Empresa 5")
+  if(empresa=="ADM")
+    return("Empresa 6")
+  if(empresa=="Cargill")
+    return("Empresa 7")
+  if(empresa=="Amaggi Argentina S.A.")
+    return("Empresa 8")
+  if(empresa=="Cofco Int. Argentina S.A.")
+    return("Empresa 9")
+  if(empresa=="AFA")
+    return("Empresa 10")
+  if(empresa=="ACA")
+    return("Empresa 11")
+  if(empresa=="Glencore")
+    return("Empresa 12")
+  if(empresa=="LDC")
+    return("Empresa 13")
+  if(empresa=="Molinos Agro")
+    return("Empresa 14")
+  if(empresa=="Cosur")
+    return("Broker 1")
+  if(empresa=="Agro Oils")
+    return("Broker 2")
+  if(empresa=="Agro Sud")
+    return("Broker 3")
+  if(empresa=="JJH")
+    return("Broker 4")
+  if(empresa=="ACI")
+    return("Broker 5")
+  if(empresa=="Mc & P")
+    return("Broker 6")
+  if(empresa=="Mercoplate")
+    return("Broker 7")
+  else
+    return("Error")
+}
+
+#Filtramos las alertas
+
+comprador = stats_precios %>% filter((producto == "Soja" & coef_var_comprador>=0.045) | 
+                           (producto == "Aceite de Soja" & coef_var_comprador>=0.04) |
+                           (producto == "Harina de Soja" & coef_var_comprador>=0.035) |
+                           (producto == "Maiz" & coef_var_comprador>=0.09) |
+                           (producto == "Aceite de Girasol" & coef_var_comprador>=0.11) |
+                           (producto == "Trigo 11.5%" & coef_var_comprador>=0.15) ) %>% 
+                            arrange(producto,posicion_ano,posicion_mes)
+
+vendedor = stats_precios %>% filter((producto == "Soja" & coef_var_vendedor>=0.045) | 
+                                       (producto == "Aceite de Soja" & coef_var_vendedor>=0.04) |
+                                       (producto == "Harina de Soja" & coef_var_vendedor>=0.035) |
+                                       (producto == "Maiz" & coef_var_vendedor>=0.09) |
+                                       (producto == "Aceite de Girasol" & coef_var_vendedor>=0.11) |
+                                       (producto == "Trigo 11.5%" & coef_var_vendedor>=0.15) )%>% 
+                            arrange(producto,posicion_ano,posicion_mes)                            
+```
+
+```{r, results='asis', echo=FALSE}
+# #Filtramos los datos para enviar por mail 
+# if (is_empty(comprador$coef_var_comprador) == FALSE){
+#   lista_comprador = merge(comprador, primas, by = c("fecha", "producto", "posicion_mes", "posicion_ano"))
+#   lista_comprador = lista_comprador %>% 
+#     select(fecha:coef_var_comprador, prima_compradora) %>%
+#     mutate(coef_var_comprador = round(coef_var_comprador * 100, digits = 1)) %>%
+#     group_by(fecha, producto, posicion_mes, posicion_ano, coef_var_comprador) %>%
+#       summarise(max_comprador = max(prima_compradora, na.rm = TRUE),
+#                 min_comprador = min(prima_compradora, na.rm = TRUE), `.groups` = 'drop') %>%
+#     mutate(fecha = format(fecha, "%d-%m-%Y"))
+#   #%>% distinct(fecha, producto, posicion_mes, posicion_ano, coef_var_comprador, max_comprador, min_comprador)
+#   colnames(lista_comprador) = c("Fecha","Producto", "Posición", "Año", "Rango de var.", "Max. comprador", 
+#                                 "Min. comprador")
+#   #print(lista_comprador, include.rownames=FALSE)
+# }
+
+
+
+##### PRUEBA #####
+#Filtramos los datos para enviar por mail 
+if (is_empty(comprador$coef_var_comprador) == FALSE){
+  lista_comprador = merge(comprador, primas, by = c("fecha", "producto", "posicion_mes", "posicion_ano"))
+  lista_comprador = lista_comprador %>% 
+    select(fecha:coef_var_comprador, prima_compradora) %>%
+    mutate(coef_var_comprador = round(coef_var_comprador * 100, digits = 1)) %>%
+    group_by(fecha, producto, posicion_mes, posicion_ano, coef_var_comprador) %>%
+      summarise(max_comprador = max(prima_compradora, na.rm = TRUE),
+                min_comprador = min(prima_compradora, na.rm = TRUE), `.groups` = 'drop') %>%
+    mutate(fecha = format(fecha, "%d-%m-%Y"))
+  #%>% distinct(fecha, producto, posicion_mes, posicion_ano, coef_var_comprador, max_comprador, min_comprador)
+  colnames(lista_comprador) = c("Fecha","Producto", "Posición", "Año", "Rango de var.", "Max. comprador", 
+                                "Min. comprador")
+  #print(lista_comprador, include.rownames=FALSE)
+}
+
+
+# if (is_empty(vendedor$coef_var_vendedor) == FALSE){
+#   lista_vendedor = merge(vendedor, primas, by = c("fecha", "producto", "posicion_mes", "posicion_ano"))
+#   lista_vendedor = lista_vendedor %>%
+#     select(fecha:coef_var_vendedor, prima_vendedora) %>%
+#     mutate(coef_var_vendedor = round(coef_var_vendedor * 100, digits = 1)) %>%
+#     group_by(fecha, producto, posicion_mes, posicion_ano, coef_var_vendedor) %>%
+#     summarise(max_vendedor = max(prima_vendedora, na.rm = TRUE),
+#               min_vendedor = min(prima_vendedora, na.rm = TRUE), `.groups` = 'drop') %>%
+#     mutate(fecha = format(fecha, "%d-%m-%Y"))
+#   colnames(lista_vendedor) = c("Fecha","Producto", "Posición", "Año", "Rango de var.", "Max. vendedor",
+#                                "Min. vendedor")
+#   #print(lista_vendedor,  include.rownames=FALSE)
+# }
+
+##### PRUEBA #####
+if (is_empty(vendedor$coef_var_vendedor) == FALSE){
+  lista_vendedor = merge(vendedor, primas, by = c("fecha", "producto", "posicion_mes", "posicion_ano"))
+  lista_vendedor = lista_vendedor %>%
+    select(fecha:coef_var_vendedor, prima_vendedora) %>%
+    mutate(coef_var_vendedor = round(coef_var_vendedor * 100, digits = 1)) %>%
+    group_by(fecha, producto, posicion_mes, posicion_ano, coef_var_vendedor) %>%
+    summarise(max_vendedor = max(prima_vendedora, na.rm = TRUE),
+              min_vendedor = min(prima_vendedora, na.rm = TRUE), `.groups` = 'drop') %>%
+    mutate(fecha = format(fecha, "%d-%m-%Y"))
+  colnames(lista_vendedor) = c("Fecha","Producto", "Posición", "Año", "Rango de var.", "Max. vendedor",
+                               "Min. vendedor")
+  #print(lista_vendedor,  include.rownames=FALSE)
+}
+
+
+```
+
+
+### Alertas compradoras
+```{r , results='asis', echo=FALSE, comment=''}
+
+if(exists("lista_comprador")==FALSE){
+  cat("No hay alertas compradoras")
+ } else {
+tabla_comprador = xtable(lista_comprador, align="lccccccc")
+print(tabla_comprador, include.rownames = FALSE, type = "html",
+         html.table.attributes = 'align="center", # center table in page
+                                rules="rows",   # only keep horizontal rows
+                                width=90%,      # increase table width to 50% 
+                                frame="below"')
+}
+```
+
+### Alertas vendedoras
+```{r , results='asis', echo=FALSE , comment=''}
+
+if(exists("lista_vendedor")==FALSE){
+  cat("No hay alertas vendedoras")
+ } else {
+tabla_vendedor = xtable(lista_vendedor, align="lccccccc")
+print(tabla_vendedor, include.rownames = FALSE, type = "html",
+         html.table.attributes = 'align="center", # center table in page
+                                rules="rows",   # only keep horizontal rows
+                                width=90%,      # increase table width to 50% 
+                                frame="below"')
+}
+```
